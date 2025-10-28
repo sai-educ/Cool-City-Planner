@@ -3,12 +3,46 @@
 // 3D Exploration Game with Decision-Making
 // ============================================
 
+// Model Asset Configuration
+// Place all GLB files in /assets/ folder
+const ASSET_PATHS = {
+  // Character
+  player: 'assets/wren.glb',                    // Main character model
+  
+  // Nature elements
+  tree: 'assets/tree.glb',                      // Generic tree
+  tree_variants: [                              // Optional: multiple tree types
+    'assets/tree1.glb',
+    'assets/tree2.glb',
+    'assets/tree3.glb'
+  ],
+  
+  // Location buildings
+  backyard: 'assets/backyard.glb',              // House/yard model
+  park: 'assets/park.glb',                      // Park structure
+  street: 'assets/street.glb',                  // Street section
+  building: 'assets/community_center.glb',      // Community center
+  waterway: 'assets/creek.glb',                 // Creek/stream
+  
+  // Environment (optional)
+  ground: 'assets/ground.glb',                  // Ground tile (if you have it)
+  
+  // Interaction markers
+  marker: 'assets/marker.glb'                   // Optional: custom marker
+};
+
+// Model cache for loaded models
+const MODEL_CACHE = new Map();
+const LOADING_MANAGER = new THREE.LoadingManager();
+let GLTF_LOADER = null;
+
 // Global game state
 const GameState = {
   scene: null,
   camera: null,
   renderer: null,
   player: null,
+  playerModel: null,
   locations: [],
   currentSeason: 0,
   seasonTimer: 120, // 2 minutes per season
@@ -21,10 +55,11 @@ const GameState = {
   gameActive: false,
   keys: {},
   world: {
-    size: 50,
+    size: 150,        // INCREASED from 50 to 150
     tileSize: 5,
     chunks: new Map()
-  }
+  },
+  modelsLoaded: false
 };
 
 // Season configuration
@@ -390,14 +425,162 @@ const LOCATION_TYPES = [
 ];
 
 // ============================================
+// MODEL LOADING SYSTEM
+// ============================================
+
+// Initialize GLTF Loader
+function initModelLoader() {
+  GLTF_LOADER = new THREE.GLTFLoader(LOADING_MANAGER);
+  
+  // Setup loading manager callbacks
+  LOADING_MANAGER.onStart = (url, loaded, total) => {
+    console.log(`Loading models: ${loaded}/${total}`);
+  };
+  
+  LOADING_MANAGER.onLoad = () => {
+    console.log('All models loaded!');
+    GameState.modelsLoaded = true;
+    updateLoadingText('Models loaded! Starting game...');
+  };
+  
+  LOADING_MANAGER.onProgress = (url, loaded, total) => {
+    const progress = Math.round((loaded / total) * 100);
+    updateLoadingText(`Loading models... ${progress}%`);
+  };
+  
+  LOADING_MANAGER.onError = (url) => {
+    console.error(`Error loading: ${url}`);
+    // Fallback to geometric shapes if model fails
+  };
+}
+
+// Update loading screen text
+function updateLoadingText(text) {
+  const loadingText = document.querySelector('.loading-text');
+  if (loadingText) {
+    loadingText.textContent = text;
+  }
+}
+
+// Load a single model and cache it
+async function loadModel(path, scale = 1) {
+  // Check cache first
+  if (MODEL_CACHE.has(path)) {
+    return MODEL_CACHE.get(path).clone();
+  }
+  
+  return new Promise((resolve, reject) => {
+    GLTF_LOADER.load(
+      path,
+      (gltf) => {
+        const model = gltf.scene;
+        model.scale.set(scale, scale, scale);
+        
+        // Enable shadows
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+        
+        // Cache the model
+        MODEL_CACHE.set(path, model);
+        resolve(model.clone());
+      },
+      (progress) => {
+        // Loading progress
+      },
+      (error) => {
+        console.error(`Failed to load model: ${path}`, error);
+        // Return fallback geometry
+        resolve(createFallbackGeometry(path));
+      }
+    );
+  });
+}
+
+// Create fallback geometry if model fails to load
+function createFallbackGeometry(path) {
+  const group = new THREE.Group();
+  
+  if (path.includes('wren') || path.includes('player')) {
+    // Fallback player
+    const geometry = new THREE.ConeGeometry(0.5, 2, 8);
+    const material = new THREE.MeshLambertMaterial({ color: 0xffa500 });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.castShadow = true;
+    group.add(mesh);
+  } else if (path.includes('tree')) {
+    // Fallback tree
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.3, 0.4, 3, 8),
+      new THREE.MeshLambertMaterial({ color: 0x8B4513 })
+    );
+    trunk.position.y = 1.5;
+    trunk.castShadow = true;
+    
+    const foliage = new THREE.Mesh(
+      new THREE.SphereGeometry(1.5, 8, 8),
+      new THREE.MeshLambertMaterial({ color: 0x228B22 })
+    );
+    foliage.position.y = 3;
+    foliage.castShadow = true;
+    
+    group.add(trunk, foliage);
+  } else {
+    // Generic fallback building
+    const color = path.includes('backyard') ? 0x8B4513 :
+                  path.includes('park') ? 0x228B22 :
+                  path.includes('street') ? 0x696969 :
+                  path.includes('building') ? 0xDC143C :
+                  path.includes('creek') ? 0x4169E1 : 0x888888;
+    
+    const geometry = new THREE.BoxGeometry(3, 3, 3);
+    const material = new THREE.MeshLambertMaterial({ color });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.y = 1.5;
+    mesh.castShadow = true;
+    group.add(mesh);
+  }
+  
+  return group;
+}
+
+// Preload all essential models
+async function preloadModels() {
+  const essentialModels = [
+    ASSET_PATHS.player,
+    ASSET_PATHS.tree,
+    ASSET_PATHS.backyard,
+    ASSET_PATHS.park,
+    ASSET_PATHS.street,
+    ASSET_PATHS.building,
+    ASSET_PATHS.waterway
+  ];
+  
+  try {
+    const loadPromises = essentialModels.map(path => loadModel(path));
+    await Promise.all(loadPromises);
+    console.log('All essential models preloaded');
+  } catch (error) {
+    console.error('Error preloading models:', error);
+  }
+}
+
+// ============================================
 // INITIALIZATION
 // ============================================
 
 window.addEventListener('load', () => {
-  setTimeout(() => {
+  initModelLoader();
+  setTimeout(async () => {
     document.getElementById('loadingScreen').classList.remove('active');
     document.getElementById('storyScreen').classList.add('active');
-  }, 2000);
+  }, 1000);
+  
+  // Preload models in background
+  preloadModels();
 });
 
 function showInstructions() {
@@ -405,12 +588,32 @@ function showInstructions() {
   document.getElementById('instructionsScreen').classList.add('active');
 }
 
-function startGame() {
-  document.getElementById('instructionsScreen').classList.remove('active');
+async function startGame() {
+  // Make sure models are loaded
+  if (!GameState.modelsLoaded) {
+    updateLoadingText('Still loading models, please wait...');
+    document.getElementById('instructionsScreen').classList.remove('active');
+    document.getElementById('loadingScreen').classList.add('active');
+    
+    // Wait for models to load
+    await new Promise((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (GameState.modelsLoaded) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 100);
+    });
+    
+    document.getElementById('loadingScreen').classList.remove('active');
+  } else {
+    document.getElementById('instructionsScreen').classList.remove('active');
+  }
+  
   document.getElementById('gameUI').classList.remove('hidden');
   
-  initThreeJS();
-  generateWorld();
+  await initThreeJS();
+  await generateWorld();
   startGameLoop();
   startSeasonTimer();
   GameState.gameActive = true;
@@ -484,23 +687,29 @@ function initThreeJS() {
   });
 }
 
-function createPlayer() {
-  // Simple player representation
-  const playerGeometry = new THREE.ConeGeometry(0.5, 2, 8);
-  const playerMaterial = new THREE.MeshLambertMaterial({ color: 0xffa500 });
-  GameState.player = new THREE.Mesh(playerGeometry, playerMaterial);
-  GameState.player.position.set(0, 1, 0);
-  GameState.player.castShadow = true;
+async function createPlayer() {
+  // Load player model
+  const playerModel = await loadModel(ASSET_PATHS.player, 1.5);
+  
+  // Create container for player
+  GameState.player = new THREE.Group();
+  GameState.player.add(playerModel);
+  GameState.player.position.set(0, 0, 0);
+  GameState.playerModel = playerModel;
+  
   GameState.scene.add(GameState.player);
+  
+  console.log('Player model loaded');
 }
 
 // ============================================
 // WORLD GENERATION
 // ============================================
 
-function generateWorld() {
-  // Ground
-  const groundGeometry = new THREE.PlaneGeometry(200, 200);
+async function generateWorld() {
+  // Ground - much larger now
+  const groundSize = 400; // INCREASED from 200 to 400
+  const groundGeometry = new THREE.PlaneGeometry(groundSize, groundSize);
   const groundMaterial = new THREE.MeshLambertMaterial({ 
     color: 0x7cb342,
     side: THREE.DoubleSide 
@@ -511,43 +720,76 @@ function generateWorld() {
   GameState.scene.add(ground);
   
   // Generate locations around the world
-  generateLocations();
+  await generateLocations();
   
   // Add decorative trees
-  addDecorationTrees();
+  await addDecorationTrees();
+  
+  console.log('World generation complete');
 }
 
-function generateLocations() {
+async function generateLocations() {
+  // Spread locations across larger map (within -80 to +80 range)
   const positions = [
-    { x: 10, z: 10 },
-    { x: -12, z: 8 },
-    { x: 15, z: -10 },
-    { x: -8, z: -12 },
-    { x: 20, z: 0 },
-    { x: 0, z: 18 },
-    { x: -15, z: -5 },
-    { x: 8, z: -18 }
+    { x: 20, z: 20 },
+    { x: -30, z: 25 },
+    { x: 40, z: -25 },
+    { x: -25, z: -35 },
+    { x: 50, z: 0 },
+    { x: 0, z: 45 },
+    { x: -40, z: -15 },
+    { x: 25, z: -50 },
+    { x: -50, z: 30 },
+    { x: 35, z: 40 },
+    { x: -15, z: -45 },
+    { x: 60, z: -15 }
   ];
   
-  positions.forEach((pos, i) => {
+  for (let i = 0; i < positions.length; i++) {
+    const pos = positions[i];
     const locationType = LOCATION_TYPES[i % LOCATION_TYPES.length];
-    createLocation(pos.x, pos.z, locationType);
-  });
+    await createLocation(pos.x, pos.z, locationType);
+  }
 }
 
-function createLocation(x, z, type) {
-  // Create a building/marker for the location
-  const geometry = new THREE.BoxGeometry(3, 3, 3);
-  const material = new THREE.MeshLambertMaterial({ color: type.color });
-  const building = new THREE.Mesh(geometry, material);
-  building.position.set(x, 1.5, z);
-  building.castShadow = true;
+async function createLocation(x, z, type) {
+  // Determine which model to load based on type
+  let modelPath;
+  switch (type.type) {
+    case 'backyard':
+      modelPath = ASSET_PATHS.backyard;
+      break;
+    case 'park':
+      modelPath = ASSET_PATHS.park;
+      break;
+    case 'street':
+      modelPath = ASSET_PATHS.street;
+      break;
+    case 'building':
+      modelPath = ASSET_PATHS.building;
+      break;
+    case 'waterway':
+      modelPath = ASSET_PATHS.waterway;
+      break;
+    default:
+      modelPath = ASSET_PATHS.backyard;
+  }
+  
+  // Load the building model
+  const building = await loadModel(modelPath, 1.0);
+  building.position.set(x, 0, z);
   GameState.scene.add(building);
   
-  // Add a marker above it
-  const markerGeometry = new THREE.CylinderGeometry(0.1, 0.1, 4, 8);
-  const markerMaterial = new THREE.MeshLambertMaterial({ color: 0xffff00 });
-  const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+  // Add a marker above it (using simple geometry or custom marker model)
+  let marker;
+  if (ASSET_PATHS.marker && MODEL_CACHE.has(ASSET_PATHS.marker)) {
+    marker = await loadModel(ASSET_PATHS.marker, 0.5);
+  } else {
+    // Fallback marker
+    const markerGeometry = new THREE.CylinderGeometry(0.1, 0.1, 4, 8);
+    const markerMaterial = new THREE.MeshLambertMaterial({ color: 0xffff00 });
+    marker = new THREE.Mesh(markerGeometry, markerMaterial);
+  }
   marker.position.set(x, 5, z);
   GameState.scene.add(marker);
   
@@ -567,40 +809,42 @@ function createLocation(x, z, type) {
   GameState.locations.push(location);
 }
 
-function addDecorationTrees() {
-  for (let i = 0; i < 30; i++) {
-    const x = (Math.random() - 0.5) * 80;
-    const z = (Math.random() - 0.5) * 80;
+async function addDecorationTrees() {
+  const numTrees = 80; // More trees for bigger map
+  
+  for (let i = 0; i < numTrees; i++) {
+    const x = (Math.random() - 0.5) * 180; // Spread across larger area
+    const z = (Math.random() - 0.5) * 180;
     
     // Avoid placing on locations
     const tooClose = GameState.locations.some(loc => {
       const dx = loc.position.x - x;
       const dz = loc.position.z - z;
-      return Math.sqrt(dx * dx + dz * dz) < 8;
+      return Math.sqrt(dx * dx + dz * dz) < 12;
     });
     
     if (!tooClose) {
-      createTree(x, z);
+      await createTree(x, z);
     }
   }
 }
 
-function createTree(x, z) {
-  // Trunk
-  const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.4, 3, 8);
-  const trunkMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
-  const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
-  trunk.position.set(x, 1.5, z);
-  trunk.castShadow = true;
-  GameState.scene.add(trunk);
+async function createTree(x, z) {
+  // Choose random tree variant if available
+  let treePath = ASSET_PATHS.tree;
+  if (ASSET_PATHS.tree_variants && ASSET_PATHS.tree_variants.length > 0) {
+    const randomIndex = Math.floor(Math.random() * ASSET_PATHS.tree_variants.length);
+    treePath = ASSET_PATHS.tree_variants[randomIndex];
+  }
   
-  // Foliage
-  const foliageGeometry = new THREE.SphereGeometry(1.5, 8, 8);
-  const foliageMaterial = new THREE.MeshLambertMaterial({ color: 0x228B22 });
-  const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
-  foliage.position.set(x, 4, z);
-  foliage.castShadow = true;
-  GameState.scene.add(foliage);
+  // Load tree model
+  const tree = await loadModel(treePath, 1.0 + Math.random() * 0.5); // Random scale variation
+  tree.position.set(x, 0, z);
+  
+  // Random rotation for variety
+  tree.rotation.y = Math.random() * Math.PI * 2;
+  
+  GameState.scene.add(tree);
 }
 
 // ============================================
@@ -640,8 +884,8 @@ function updatePlayer() {
     }
   }
   
-  // Clamp position to world bounds
-  const bound = 40;
+  // Clamp position to world bounds (increased for larger map)
+  const bound = 90; // INCREASED from 40 to 90
   GameState.player.position.x = Math.max(-bound, Math.min(bound, GameState.player.position.x));
   GameState.player.position.z = Math.max(-bound, Math.min(bound, GameState.player.position.z));
 }
@@ -686,7 +930,7 @@ function updateNearestLocation() {
 function updateMiniMap() {
   const canvas = document.getElementById('miniMapCanvas');
   const ctx = canvas.getContext('2d');
-  const scale = 2;
+  const scale = 1.1; // ADJUSTED from 2 to 1.1 for larger world
   
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   
